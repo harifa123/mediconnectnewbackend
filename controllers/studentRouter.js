@@ -201,40 +201,33 @@ router.post('/doctor-view-requests', async (req, res) => {
 
 
 async function generateTimeSlotAndToken(student) {
-    try {
-        // Find the latest token for the specific user from the database
-        const latestToken = await StudentRequest.findOne({ userId: student._id }, {}, { sort: { 'token': -1 } });
-        console.log('Latest Token for', student.email, ':', latestToken);
+    // Find the latest token from the database
+    const latestToken = await StudentRequest.findOne({}, {}, { sort: { 'token': -1 } });
 
-        // Increment the latest token by 1 to generate a new token
-        const newToken = latestToken && !isNaN(latestToken.token) ? latestToken.token + 1 : 1;
-        console.log('New Token for', student.email, ':', newToken);
+    // Increment the latest token by 1 to generate a new token
+    const newToken = latestToken && !isNaN(latestToken.token) ? latestToken.token + 1 : 1;
 
-        // Generate time slot for the new appointment
-        const currentTime = new Date();
-        const consultationTime = 5 * 60 * 1000; // 5 minutes in milliseconds
-        let startTime;
-        if (latestToken && latestToken.timeSlot && latestToken.timeSlot.endTime) {
-            startTime = new Date(latestToken.timeSlot.endTime.getTime() + 1000); // Start from 1 second after the end time of the previous appointment
-        } else {
-            startTime = new Date(currentTime.setHours(9, 0, 0, 0)); // Start from 9 AM of the current day
-        }
-        const endTime = new Date(startTime.getTime() + consultationTime); // End time is 5 minutes after start time
-        console.log('Start Time for', student.email, ':', startTime);
-        console.log('End Time for', student.email, ':', endTime);
-
-        return { startTime, endTime, token: newToken };
-    } catch (error) {
-        console.error('Error in generateTimeSlotAndToken:', error);
-        throw error;
+    // Generate time slot for the new appointment
+    const currentTime = new Date();
+    const consultationTime = 5 * 60 * 1000; // 5 minutes in milliseconds
+    let startTime;
+    if (latestToken && latestToken.timeSlot && latestToken.timeSlot.endTime) {
+        startTime = new Date(latestToken.timeSlot.endTime.getTime() + 1000); // Start from 1 second after the end time of the previous appointment
+    } else {
+        startTime = new Date(currentTime.setHours(9, 0, 0, 0)); // Start from 9 AM of the current day
     }
-}
 
+
+    const endTime = new Date(startTime.getTime() + consultationTime); // End time is 5 minutes after start time
+
+    return { startTime, endTime, token: newToken };
+}
 
 
 // Define API endpoint for approving requests
 router.put('/approve-request', async (req, res) => {
     const { userId } = req.body;
+
     try {
         // Find the request by student ID and ensure it's not already completed
         let request = await StudentRequest.findOneAndUpdate(
@@ -250,33 +243,29 @@ router.put('/approve-request', async (req, res) => {
             return res.status(400).json({ message: 'Request not found or already completed.' });
         }
 
-        // Update the student's status in the student schema if needed
-        const student = await Student.findById(userId);
+        // Generate time slot and token
+        const { startTime, endTime, token } = await generateTimeSlotAndToken(request);
+
+        // Update student with generated time slot and token
+        const student = await Student.findOneAndUpdate(
+            { userId: userId },
+            {
+                token: token,
+                timeSlot: { startTime: startTime, endTime: endTime }
+            },
+            { new: true }
+        );
+
         if (!student) {
             return res.status(400).json({ message: 'Student not found.' });
         }
 
-        // Update the student's status based on the request status
-        student.status = request.status;
-
-        // Generate time slot and token
-        const { startTime, endTime, token } = await generateTimeSlotAndToken(student);
-
-        // Update student with generated time slot and token
-        student.timeSlot = { startTime, endTime };
-        student.token = token;
-
-        // Save updated student to the database
-        await student.save();
-
-        res.status(200).json({ message: 'Request status updated successfully.' });
+        res.status(200).json({ message: 'Request status updated successfully.', timeSlot: student.timeSlot });
     } catch (error) {
         console.error(error);
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
-
-
 
 
 
