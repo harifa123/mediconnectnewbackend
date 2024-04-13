@@ -61,7 +61,7 @@ router.post('/addStudent', async (req, res) => {
         }
 
         // Create the student
-        await studentModel.create({ email, admissionNumber });
+        await studentModel.create({ name,email, admissionNumber });
 
         res.status(200).json({ message: 'Student added successfully' });
     } catch (error) {
