@@ -8,6 +8,8 @@ const nodemailer = require('nodemailer');
 const StudentRequest = require('../models/requestModel');
 const Counter = require('../models/counterModel');
 const Prescription = require('../models/prescriptionModel');
+const PDFDocument = require('pdfkit');
+const path = require('path');
 
 
 require("dotenv").config();
@@ -214,6 +216,8 @@ router.post('/doctor-view-requests', async (req, res) => {
 });
 
 
+
+
 router.get('/doctor-requests-all', async (req, res) => {
     try {
         const requests = await StudentRequest.find();
@@ -223,6 +227,58 @@ router.get('/doctor-requests-all', async (req, res) => {
         res.status(500).json({ message: 'Internal Server Error' });
     }
 });
+
+
+router.post('/download', async (req, res) => {
+    try {
+        const { date } = req.body;
+        console.log('Date parameter received:', date); 
+      let requests;
+      if (date) {
+        const parsedDate = new Date(date);
+        if (!isValidDate(parsedDate)) {
+          return res.status(400).json({ message: 'Invalid date format' });
+        }
+        const startOfDay = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(), 0, 0, 0);
+        const endOfDay = new Date(parsedDate.getFullYear(), parsedDate.getMonth(), parsedDate.getDate(), 23, 59, 59, 999);
+        requests = await StudentRequest.find({ createdAt: { $gte: startOfDay, $lte: endOfDay } });
+        if (requests.length === 0) {
+          return res.status(404).json({ message: 'No student requests found for the specified date' });
+        }
+      } else {
+        requests = await StudentRequest.find();
+      }
+      const doc = new PDFDocument();
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', 'attachment; filename="student_requests.pdf"');
+      doc.pipe(res);
+      const borderWidth = 10; // Define the border width
+const imagePath = path.join(__dirname, '../assets', 'fisats.jpg'); // Replace 'fisats.jpg' with the actual filename
+
+try {
+  doc.image(imagePath, borderWidth + 10, borderWidth + 10, { width: 100 },{align:'center'}.moveDown);
+} catch (error) {
+  console.error('Error loading image:', error);
+  doc.text('Image not found', borderWidth + 10, borderWidth + 10); // Display a placeholder text if image loading fails
+}
+doc.fontSize(20).text('\nFEDERAL INSTITUTE OF SCIENCE AND TECHNOLOGY',borderWidth + 120, borderWidth + 10,{align:'center'}.moveDown);
+
+      doc.fontSize(16).text('\n\nSTUDENT REQUESTS\n\n', { align: 'center' }).moveDown();
+      requests.forEach((request, index) => {
+        const requestText = `${index + 1}. Name: ${request.name}\n Admission Number: ${request.admissionNumber}\n Disease: ${request.disease}\n Status: ${request.status}\n Token: ${request.token}`;
+        doc.text(requestText);
+        doc.moveDown();
+      });
+      doc.end();
+    } catch (error) {
+      console.error(error);
+      res.status(500).send('Internal Server Error');
+    }
+  });
+  function isValidDate(date) {
+    return date instanceof Date && !isNaN(date);
+  }
+  
 
 
 let timeSlotQueue = []; // Define time slot queue globally
@@ -260,6 +316,7 @@ function initializeTimeSlotQueue() {
         resolve(); // Resolve the promise once initialization is complete
     });
 }
+
 
 
 function resetTimeSlotQueue() {
@@ -328,6 +385,7 @@ async function assignTimeSlotToUser(userId) {
         throw error;
     }
 }
+
 
 //Updated code for /student-form-request endpoint with error handling
 router.post('/student-request', async (req, res) => {
