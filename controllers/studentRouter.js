@@ -10,11 +10,16 @@ const Counter = require('../models/counterModel');
 const Prescription = require('../models/prescriptionModel');
 const PDFDocument = require('pdfkit');
 const path = require('path');
-
-
+const { ObjectId } = require('mongoose').Types;
 require("dotenv").config();
 const cron = require('node-cron');
 const moment = require('moment-timezone');
+// const TimeSlot = require('../models/Timemodel');
+const DoctorLeave = require('../models/doctorLeave');
+const Booking = require('../models/bookingModel');
+
+
+
 
 //Route to handle student registration request
 router.post('/register-request', async (req, res) => {
@@ -253,7 +258,7 @@ router.post('/download', async (req, res) => {
       res.setHeader('Content-Disposition', 'attachment; filename="student_requests.pdf"');
       doc.pipe(res);
       const borderWidth = 10; // Define the border width
-const imagePath = path.join(__dirname, '../assets', 'fisats.jpg'); // Replace 'fisats.jpg' with the actual filename
+const imagePath = path.join(__dirname, '../assets', 'images.png'); // Replace 'fisats.jpg' with the actual filename
 
 try {
   doc.image(imagePath, borderWidth + 10, borderWidth + 10, { width: 100 },{align:'center'}.moveDown);
@@ -265,7 +270,7 @@ doc.fontSize(20).text('\nFEDERAL INSTITUTE OF SCIENCE AND TECHNOLOGY',borderWidt
 
       doc.fontSize(16).text('\n\nSTUDENT REQUESTS\n\n', { align: 'center' }).moveDown();
       requests.forEach((request, index) => {
-        const requestText = `${index + 1}. Name: ${request.name}\n Admission Number: ${request.admissionNumber}\n Disease: ${request.disease}\n Status: ${request.status}\n Token: ${request.token}`;
+        const requestText = `${index + 1}. Name: ${request.name}\n AdmNo/EmpId: ${request.admissionNumber}\n Disease: ${request.disease}\n Status: ${request.status}\n Token: ${request.token}`;
         doc.text(requestText);
         doc.moveDown();
       });
@@ -281,119 +286,149 @@ doc.fontSize(20).text('\nFEDERAL INSTITUTE OF SCIENCE AND TECHNOLOGY',borderWidt
   
 
 
-let timeSlotQueue = []; // Define time slot queue globally
+  let timeSlotQueue = [];
 
-function initializeTimeSlotQueue() {
-    return new Promise((resolve, reject) => {
-        console.log("Initializing time slot queue...");
-        const today = moment.tz('Asia/Kolkata'); // Get the current date and time in IST
-        const nextConsultationDay = today.clone().add(1, 'days'); // Set to the next day
-
-        const isWeekend = today.day() === 0 || today.day() === 6; // Check if it's Saturday or Sunday
-        const isConsultationDay = today.hours() >= 9 && today.hours() < 17 && !isWeekend;
-
-        let timeSlotTime;
-        if (isConsultationDay) {
-            timeSlotTime = today.clone().hours(9).minutes(0).seconds(0).milliseconds(0); // Start from 9 AM today
-        } else {
-            timeSlotTime = moment.tz(nextConsultationDay, 'Asia/Kolkata').hours(9).minutes(0).seconds(0).milliseconds(0); // Start from 9 AM next consultation day
-        }
-
-        const consultationEnd = moment.tz(nextConsultationDay, 'Asia/Kolkata').hours(17).minutes(0).seconds(0).milliseconds(0); // Set the end time for consultation in IST
-
-        while (timeSlotTime.isBefore(consultationEnd)) {
-            timeSlotQueue.push({ startTime: timeSlotTime.clone(), endTime: timeSlotTime.clone().add(5, 'minutes') });
-            timeSlotTime.add(5, 'minutes');
-        }
-
-        // Print all the time slots in IST
-        timeSlotQueue.forEach((slot, index) => {
-            console.log(`Slot ${index + 1}: ${slot.startTime.format('YYYY-MM-DD HH:mm:ss')} - ${slot.endTime.format('YYYY-MM-DD HH:mm:ss')}`);
-        });
-
-        console.log("Time slot queue initialized with", timeSlotQueue.length, "time slots.");
-        console.log("Last time slot generated:", timeSlotQueue.length > 0 ? timeSlotQueue[timeSlotQueue.length - 1] : "None");
-        resolve(); // Resolve the promise once initialization is complete
-    });
-}
-
-
-
-function resetTimeSlotQueue() {
-    console.log("Resetting time slot queue...");
-    timeSlotQueue = [];
-    initializeTimeSlotQueue();
-}
-
-function scheduleTimeSlotQueueReset() {
-    const now = moment.tz('Asia/Kolkata'); // Get the current date and time in IST
-    const endOfDay = moment.tz('Asia/Kolkata').endOf('day'); // Get the end of the current day in IST
-    const timeUntilEndOfDay = endOfDay.diff(now); // Calculate the time until the end of the day
-    setTimeout(() => {
-        resetTimeSlotQueue(); // Reset the time slot queue
-        scheduleTimeSlotQueueReset(); // Schedule the reset for the next day
-    }, timeUntilEndOfDay);
-}
-
-
-//Initialize the time slot queue and schedule the reset function
-initializeTimeSlotQueue();
-scheduleTimeSlotQueueReset();
-
-//Function to assign a time slot to a user
-//Function to assign a time slot to a user
-//Function to assign a time slot to a user
-async function assignTimeSlotToUser(userId) {
-    console.log("Assigning time slot to user:", userId);
-    if (timeSlotQueue.length === 0) {
-        throw new Error("No available time slots");
-    }
-    let timeSlot = null;
-    for (let i = 0; i < timeSlotQueue.length; i++) {
-        // Get the current date and time in IST
-        const currentTimeIST = moment.tz('Asia/Kolkata');
-
-        // Use the current time to adjust the dates in the timeSlotQueue array
-        const startTimeIST = timeSlotQueue[i].startTime.clone().tz('Asia/Kolkata');
-        const endTimeIST = timeSlotQueue[i].endTime.clone().tz('Asia/Kolkata');
-
-        // Check if the time slot is within the consultation hours (Monday to Friday, 9 AM to 5 PM)
-        if (startTimeIST.day() >= 1 && startTimeIST.day() <= 5 &&
-            startTimeIST.hours() >= 9 && startTimeIST.hours() < 17) {
-            // Check if the time slot is after the current booking timestamp
-            if (startTimeIST > currentTimeIST) {
-                timeSlot = { startTime: startTimeIST, endTime: endTimeIST };
-                timeSlotQueue.splice(i, 1); // Remove the assigned time slot from the queue
-                break;
-            }
-        }
-    }
-    if (!timeSlot) {
-        throw new Error("No available time slots for tomorrow");
-    }
-    try {
-        // Assuming StudentRequest is your Mongoose model
-        const updatedRequest = await StudentRequest.findOneAndUpdate(
-            { userId, status: 'Approve' },
-            { $set: { timeSlot: timeSlot } }, // Ensure the time slot is saved in IST format
-            { new: true }
-        );
-        console.log("Assigned time slot:", timeSlot);
-        console.log("Updated request:", updatedRequest);
-    } catch (error) {
-        console.error("Error assigning time slot to user:", userId, error);
-        throw error;
-    }
-}
+  function initializeTimeSlotQueue() {
+      return new Promise((resolve, reject) => {
+          console.log("Initializing time slot queue...");
+          const today = moment().tz('Asia/Kolkata'); // Get the current date in IST
+          const futureDates = [];
+          const endDateTime = moment(today).add(6, 'months'); // Adjust this as needed
+          let currentDate = moment(today).startOf('day');
+  
+          // Generate future consultation dates (Tuesdays and Thursdays) within the specified period
+          while (currentDate.isSameOrBefore(endDateTime)) {
+              if (currentDate.day() === 2 || currentDate.day() === 4) { // Tuesday or Thursday
+                  futureDates.push(currentDate.clone());
+              }
+              currentDate.add(1, 'day');
+          }
+  
+          // Generate time slots for each future consultation day
+          futureDates.forEach(consultationDay => {
+              const consultationStartTime = moment(consultationDay).hours(14).minutes(0).seconds(0).milliseconds(0);
+              const consultationEndTime = moment(consultationDay).hours(17).minutes(0).seconds(0).milliseconds(0);
+              let timeSlotTime = moment(consultationStartTime);
+  
+              // Generate time slots with a duration of 15 minutes
+              while (timeSlotTime.isBefore(consultationEndTime)) {
+                  timeSlotQueue.push({ startTime: timeSlotTime.clone(), endTime: timeSlotTime.clone().add(15, 'minutes'), available: true });
+                  timeSlotTime.add(15, 'minutes');
+              }
+          });
+  
+          // Log the generated time slots
+          timeSlotQueue.forEach((slot, index) => {
+              console.log(`Slot ${index + 1}: ${slot.startTime.format('YYYY-MM-DD HH:mm:ss')} - ${slot.endTime.format('YYYY-MM-DD HH:mm:ss')}`);
+          });
+  
+          console.log("Time slot queue initialized with", timeSlotQueue.length, "time slots.");
+          console.log("Last time slot generated:", timeSlotQueue.length > 0 ? timeSlotQueue[timeSlotQueue.length - 1] : "None");
+  
+          resolve();
+      });
+  }
+  
+  
+  
+  let doctorLeaveDates = [];
+  
+  function markDoctorLeave(date) {
+      if (!doctorLeaveDates.includes(date)) {
+          doctorLeaveDates.push(date);
+          timeSlotQueue.forEach(slot => {
+              const slotDate = slot.startTime.format('YYYY-MM-DD');
+              if (slotDate === date) {
+                  slot.available = false;
+              }
+          });
+          console.log(`Doctor is on leave on ${date}. Time slots marked as unavailable.`);
+          return true;
+      } else {
+          console.log(`Doctor is already on leave on ${date}.`);
+          return false;
+      }
+  }
+  
+  
+  initializeTimeSlotQueue();
+  
+  async function isTimeSlotAvailable(date, timeSlot) {
+      try {
+          const selectedDate = moment(date).startOf('day');
+          const selectedTimeSlotStart = moment(`${date} ${timeSlot}`, 'YYYY-MM-DD HH:mm');
+          const existingRequest = await StudentRequest.findOne({
+              date: selectedDate,
+              'timeSlot.startTime': selectedTimeSlotStart.toDate()
+          });
+          return !existingRequest;
+      } catch (error) {
+          console.error("Error checking time slot availability:", error);
+          throw error;
+      }
+  }
+  
+  
+  async function assignTimeSlotToUser(userId, date, timeSlot) {
+      console.log("Assigning time slot to user:", userId);
+      try {
+          const updatedRequest = await StudentRequest.findOneAndUpdate(
+              { userId, status: 'Approve', date },
+              { $set: { timeSlot } }, // Update with the provided time slot string
+              { new: true }
+          );
+          console.log("Assigned time slot:", timeSlot);
+          console.log("Updated request:", updatedRequest);
+      } catch (error) {
+          console.error("Error assigning time slot to user:", userId, error);
+          throw error;
+      }
+  }
+  
 
 
 //Updated code for /student-form-request endpoint with error handling
+// router.post('/student-request', async (req, res) => {
+//     try {
+//         const { userId, name, admissionNumber, disease } = req.body;
+//         if (!userId) {
+//             return res.status(400).send("Error: userId is required");
+//         }
+//         const maxSequenceNumberRequest = await StudentRequest.findOne().sort('-sequenceNumber');
+//         const sequenceNumber = maxSequenceNumberRequest ? maxSequenceNumberRequest.sequenceNumber + 1 : 1;
+//         const newRequest = new StudentRequest({
+//             userId,
+//             name,
+//             admissionNumber,
+//             disease,
+//             status: 'Approve',
+//             timeSlot: null,
+//             sequenceNumber
+//         });
+//         await newRequest.save();
+//         res.status(201).send("Request submitted successfully, Please check for the Email for the confirmation");
+//     } catch (err) {
+//         console.error("Error processing student form request:", err);
+//         res.status(500).send("Internal Server Error");
+//     }
+// });
+
+
 router.post('/student-request', async (req, res) => {
     try {
-        const { userId, name, admissionNumber, disease } = req.body;
-        if (!userId) {
-            return res.status(400).send("Error: userId is required");
+        const { userId, name, admissionNumber, disease, date, timeSlot } = req.body;
+        if (!userId || !name || !admissionNumber || !disease || !date || !timeSlot) {
+            return res.status(400).json({ message: 'All fields are required.' });
         }
+        console.log("received time slot : ",timeSlot);
+        const [startTime, endTime] = timeSlot.split(' - ').map(time => time.trim());
+        console.log("[startTime, endTime] : ",[startTime, endTime]);
+        const timeSlotStartTime = moment(`${date} ${startTime}`, 'YYYY-MM-DD HH:mm');
+        console.log("timeSlotStartTime : ",timeSlotStartTime);
+        const timeSlotEndTime = moment(`${date} ${endTime}`, 'YYYY-MM-DD HH:mm');
+        console.log("timeSlotEndTime : ",timeSlotEndTime);
+        const formattedTimeSlot = `${timeSlotStartTime.format('hh:mm A')} - ${timeSlotEndTime.format('hh:mm A')}`;
+        console.log("formattedTimeSlot : ",formattedTimeSlot);
         const maxSequenceNumberRequest = await StudentRequest.findOne().sort('-sequenceNumber');
         const sequenceNumber = maxSequenceNumberRequest ? maxSequenceNumberRequest.sequenceNumber + 1 : 1;
         const newRequest = new StudentRequest({
@@ -401,65 +436,55 @@ router.post('/student-request', async (req, res) => {
             name,
             admissionNumber,
             disease,
+            date: date, // Parse date as UTC
+            timeSlot: formattedTimeSlot,
             status: 'Approve',
-            timeSlot: null,
             sequenceNumber
         });
         await newRequest.save();
-        res.status(201).send("Request submitted successfully, Please check for the Email for the confirmation");
+        res.status(201).json({ message: 'Booking request submitted successfully.' });
     } catch (err) {
-        console.error("Error processing student form request:", err);
-        res.status(500).send("Internal Server Error");
+        console.error("Error processing booking request:", err);
+        res.status(500).json({ message: 'Internal Server Error' });
     }
 });
 
+
 // Schedule the task to run every 5 minutes, 24/7
 
-cron.schedule('*/1 * * * *', async () => {
+cron.schedule('*/2 * * * *', async () => {
     try {
-        // Fetch pending requests
         const pendingRequests = await StudentRequest.find({
             status: 'Approve',
-            createdAt: { $lte: new Date() } // Filter by requests created before or at the current time
-        }).sort({ createdAt: 1 }); // Sort by creation time in ascending order (FIFO)
-
-        // Approve requests and send confirmation emails
-        let slotCount = 0; // Counter to track the number of allocated time slots
+        }).sort({ createdAt: 1 });
+        
         for (const request of pendingRequests) {
-            // Check if the maximum number of time slots for the day (96 slots) is reached
-            if (slotCount >= 96) {
-                console.log('Maximum time slots reached for the day.');
-                break; // Exit loop if maximum slots reached
-            }
-
-            await assignTimeSlotToUser(request.userId);
+            await assignTimeSlotToUser(request.userId, request.date, request.timeSlot);
             request.status = 'Approved';
-            const student = await Student.findById(request.userId);
-            student.status = request.status;
-            await student.save();
-            const token = `MC${request.sequenceNumber}`;
-            request.token = token;
+
+            // Save the token in the StudentRequest document
+            request.token = `MC${request.sequenceNumber}`;
+
             await request.save();
 
-            // Wait for a short duration to ensure the database is updated
-            await new Promise(resolve => setTimeout(resolve, 1000)); // Adjust the duration as needed
+            const student = await Student.findById(request.userId);
+            if (student) {
+                student.status = request.status;
+                student.token = request.token; // Save token in the Student document
+                await student.save();
+            }
 
-            // Fetch the updated request data from the database
-            const updatedRequest = await StudentRequest.findById(request._id);
-
-            // Get the time slot and token from the updated request
-            const timeSlotStartTime = moment(updatedRequest.timeSlot.startTime).tz('Asia/Kolkata');
-            const timeSlotEndTime = moment(updatedRequest.timeSlot.endTime).tz('Asia/Kolkata');
+            const timeSlotStartTime = moment(request.timeSlot.startTime).tz('Asia/Kolkata');
+            const timeSlotEndTime = moment(request.timeSlot.endTime).tz('Asia/Kolkata');
             const timeSlot = timeSlotStartTime.format('YYYY-MM-DD HH:mm') + ' - ' + timeSlotEndTime.format('HH:mm');
             const date = timeSlotStartTime.format('YYYY-MM-DD');
-            const email = student.email; // Assuming email is stored in student document
+            const email = student.email;
 
-            // Send confirmation email
             const transporter = nodemailer.createTransport({
                 service: 'gmail',
                 host: 'smtp.gmail.com',
                 port: 587,
-                secure: false, // Use true for port 465, false for all other ports
+                secure: false,
                 auth: {
                     user: process.env.USER,
                     pass: process.env.APP_PASSWORD,
@@ -470,20 +495,29 @@ cron.schedule('*/1 * * * *', async () => {
                 from: process.env.USER,
                 to: email,
                 subject: 'Booking Confirmation',
-                text: `Your booking has been confirmed for ${date}.\nTime Slot (IST): ${timeSlot}\nToken: ${token}`,
+                text: `Your booking has been confirmed for ${request.date}.\nTime Slot (IST): ${request.timeSlot}\nToken: ${request.token}`,
             });
 
             console.log(`Confirmation email sent to ${email}`);
-            slotCount++; // Increment slot counter
+
+            const newBooking = new Booking({
+                userId: request.userId,
+                name: request.name,
+                admissionNumber: request.admissionNumber,
+                disease: request.disease,
+                date: request.date,
+                timeSlot: request.timeSlot,
+                token: request.token, // Save token in the Booking document
+            });
+
+            await newBooking.save();
         }
 
         console.log('Scheduled task: Approved pending requests and sent confirmation emails successfully.');
     } catch (err) {
         console.error('Scheduled task error:', err);
-        // Optionally, send an alert/notification to administrators about the error
     }
 });
-
 
 router.post('/submit-prescription', async (req, res) => {
     const { userId, doctorNotes, medicine,dosage,instructions } = req.body;
@@ -573,6 +607,128 @@ router.post('/viewprofile', async (req, res) => {
 
 
 
+
+router.post('/apply-for-leave', async (req, res) => {
+    try {
+        const { date, reason } = req.body;
+        const dateInUTC = moment.utc(date).startOf('day').toDate(); // Convert to UTC date
+        console.log(dateInUTC);
+        const existingStudentRequest = await StudentRequest.findOne({
+            date: dateInUTC,
+            status: { $in: ['Approve', 'Approved'] }
+        });
+        const existingBooking = await Booking.findOne({ date: dateInUTC });
+        if (existingStudentRequest || existingBooking) {
+            return res.status(400).json({ message: 'Cannot apply for leave. Bookings exist for this date.' });
+        }
+        const newLeave = new DoctorLeave({
+            date: dateInUTC,
+            reason
+        });
+        await newLeave.save();
+        res.status(200).json({ message: 'Leave applied successfully.' });
+    } catch (error) {
+        console.error(error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+
+// Doctor Leave Dates API
+router.get('/api/doctor-leave-dates', async (req, res) => {
+    try {
+        const doctorLeaveDates = await DoctorLeave.find({}, 'date'); // Fetch only the dates
+        res.status(200).json(doctorLeaveDates);
+    } catch (error) {
+        console.error('Error fetching doctor leave dates:', error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+// Consultation Days API
+router.get('/api/consultation-days', async (req, res) => {
+    try {
+        const consultationDays = [];
+        // Generate consultation days for the next 6 months
+        const startDate = moment.utc(); // Start date in UTC
+        const endDate = moment.utc().add(14, 'months'); // End date in UTC
+        for (let date = startDate.clone(); date.isSameOrBefore(endDate); date.add(1, 'day')) {
+            if (date.day() === 2 || date.day() === 4) { // Tuesday or Thursday
+                const isLeaveDate = await DoctorLeave.exists({ date: { $eq: moment(date).startOf('day').toDate() } });
+                console.log(isLeaveDate);
+                const isFullyBooked = await isDayFullyBooked(date);
+                if (!isLeaveDate && !isFullyBooked) {
+                    consultationDays.push(date.format('YYYY-MM-DD'));
+                }
+            }
+        }
+        res.status(200).json(consultationDays);
+    } catch (error) {
+        console.error('Error fetching consultation days:', error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+async function isDayFullyBooked(date) {
+    try {
+        const startTime = moment.utc(date).set('hour', 14).set('minute', 0); // Set start time in UTC
+        const endTime = moment.utc(date).set('hour', 17).set('minute', 0); // Set end time in UTC
+        const bookingsCount = await StudentRequest.countDocuments({
+            date: moment(date).startOf('day').toDate(), // Convert to UTC
+            'timeSlot.startTime': { $gte: startTime.toDate() },
+            'timeSlot.endTime': { $lte: endTime.toDate() }
+        });
+        return bookingsCount >= 12; // Assuming there are 12 time slots per day
+    } catch (error) {
+        console.error('Error checking if day is fully booked:', error);
+        throw error;
+    }
+}
+
+// Available Time Slots API
+router.post('/api/available-time-slots', async (req, res) => {
+    try {
+        const { date } = req.body;
+        console.log("received date : ", date);
+        if (!date) {
+            return res.status(400).json({ message: 'Date parameter is required' });
+        }
+        //const selectedDate = moment.utc(date).tz('Asia/Kolkata').startOf('day');
+        const availableTimeSlots = await getAvailableTimeSlots(date);
+        res.status(200).json(availableTimeSlots);
+    } catch (error) {
+        console.error('Error fetching available time slots:', error);
+        res.status(500).json({ message: 'Internal Server Error' });
+    }
+});
+
+async function getAvailableTimeSlots(date) {
+    try {
+        const startTime = moment(date).set('hour', 14).set('minute', 0);
+        const endTime = moment(date).set('hour', 17).set('minute', 0);
+        const timeSlots = [];
+        let currentTime = startTime.clone();
+        while (currentTime.isBefore(endTime)) {
+            timeSlots.push({
+                startTime: currentTime.format('hh:mm A'),
+                endTime: currentTime.add(15, 'minutes').format('hh:mm A'),
+            });
+        }
+        const bookedTimeSlots = await StudentRequest.distinct('timeSlot', { date });
+        console.log('Booked time slots:', bookedTimeSlots);
+        const availableTimeSlots = timeSlots.filter(slot => {
+            // Check if the slot is not booked
+            return !bookedTimeSlots.includes(slot.startTime + ' - ' + slot.endTime);
+        });
+        return availableTimeSlots;
+    } catch (error) {
+        console.error('Error fetching available time slots:', error);
+        throw error;
+    }
+}
+
+
+
 // Route to get prescription details of a particular student
 router.post('/viewprescription', async (req, res) => {
     try {
@@ -619,6 +775,25 @@ router.post('/viewprescription', async (req, res) => {
 //     }
 // });
 
+
+router.get('/filter', async (req, res) => {
+    try {
+      const { disease } = req.query;
+  
+      // Check if disease parameter is provided
+      if (!disease) {
+        return res.status(400).json({ message: 'Disease parameter is required' });
+      }
+  
+      // Filter student requests by disease
+      const studentRequests = await StudentRequest.find({ disease });
+  
+      res.json(studentRequests);
+    } catch (error) {
+      console.error(error);
+      res.status(500).json({ message: 'Internal server error' });
+    }
+  });
 
 
 module.exports = router;
